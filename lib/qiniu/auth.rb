@@ -25,6 +25,18 @@ module Qiniu
           # 默认授权期1小时
           return Time.now.to_i + DEFAULT_AUTH_SECONDS
         end # calculate_deadline
+
+        def calculate_hmac_sha1_digest(sk, str)
+          begin
+            sign = HMAC::SHA1.new(sk).update(str).digest
+          rescue RuntimeError => e
+            raise RuntimeError, "Please set Qiniu's access_key and secret_key before authorize any tokens."
+          rescue
+            raise
+          else
+            return sign
+          end
+        end
       end # class << self
 
       class PutPolicy
@@ -49,7 +61,9 @@ module Qiniu
           :return_url             => "returnUrl"           ,
           :return_body            => "returnBody"          ,
           :callback_url           => "callbackUrl"         ,
+          :callback_host          => "callbackHost"        ,
           :callback_body          => "callbackBody"        ,
+          :callback_body_type     => "callbackBodyType"    ,
           :persistent_ops         => "persistentOps"       ,
           :persistent_notify_url  => "persistentNotifyUrl" ,
           :persistent_pipeline    => "persistentPipeline"  ,
@@ -58,6 +72,7 @@ module Qiniu
           :deadline               => "deadline"            ,
           :insert_only            => "insertOnly"          ,
           :fsize_limit            => "fsizeLimit"          ,
+          :callback_fetch_key     => "callbackFetchKey"    ,
           :detect_mime            => "detectMime"          ,
           :mime_limit             => "mimeLimit"
         } # PARAMS
@@ -166,7 +181,7 @@ module Qiniu
           end
 
           ### 生成数字签名
-          sign = HMAC::SHA1.new(secret_key).update(download_url).digest
+          sign = calculate_hmac_sha1_digest(secret_key, download_url)
           encoded_sign = Utils.urlsafe_base64_encode(sign)
 
           ### 生成下载授权凭证
@@ -191,11 +206,7 @@ module Qiniu
           return authorize_download_url(download_url, args)
         end # authorize_download_url_2
 
-        def generate_acctoken(url, body = '')
-          ### 提取AK/SK信息
-          access_key = Config.settings[:access_key]
-          secret_key = Config.settings[:secret_key]
-
+        def generate_acctoken_sign_with_mac(access_key, secret_key, url, body)
           ### 解析URL，生成待签名字符串
           uri = URI.parse(url)
           signing_str = uri.path
@@ -216,14 +227,13 @@ module Qiniu
           end
 
           ### 生成数字签名
-          sign = HMAC::SHA1.new(secret_key).update(signing_str).digest
-          encoded_sign = Utils.urlsafe_base64_encode(sign)
+          sign = calculate_hmac_sha1_digest(secret_key, signing_str)
+          return Utils.urlsafe_base64_encode(sign)
+        end # generate_acctoken_sign_with_mac
 
-          ### 生成管理授权凭证
-          acctoken = "#{access_key}:#{encoded_sign}"
-
-          ### 返回管理授权凭证
-          return acctoken
+        def generate_acctoken(url, body = '')
+          encoded_sign = generate_acctoken_sign_with_mac(Config.settings[:access_key], Config.settings[:secret_key], url, body)
+          return "#{Config.settings[:access_key]}:#{encoded_sign}"
         end # generate_acctoken
 
         def generate_uptoken(put_policy)
@@ -235,7 +245,7 @@ module Qiniu
           encoded_put_policy = Utils.urlsafe_base64_encode(put_policy.to_json)
 
           ### 生成数字签名
-          sign = HMAC::SHA1.new(secret_key).update(encoded_put_policy).digest
+          sign = calculate_hmac_sha1_digest(secret_key, encoded_put_policy)
           encoded_sign = Utils.urlsafe_base64_encode(sign)
 
           ### 生成上传授权凭证
@@ -244,6 +254,31 @@ module Qiniu
           ### 返回上传授权凭证
           return uptoken
         end # generate_uptoken
+
+        def authenticate_callback_request(auth_str, url, body = '')
+          ### 提取AK/SK信息
+          access_key = Config.settings[:access_key]
+          secret_key = Config.settings[:secret_key]
+
+          ### 检查签名格式
+          ak_pos = auth_str.index(access_key)
+          if ak_pos.nil? then
+            return false
+          end
+
+          colon_pos = auth_str.index(':', ak_pos + 1)
+          if colon_pos.nil? || ((ak_pos + access_key.length) != colon_pos) then
+            return false
+          end
+
+          encoded_sign = generate_acctoken_sign_with_mac(access_key, secret_key, url, body)
+          sign_pos = auth_str.index(encoded_sign, colon_pos + 1)
+          if sign_pos.nil? || ((sign_pos + encoded_sign.length) != auth_str.length) then
+            return false
+          end
+
+          return true
+        end # authenticate_callback_request
       end # class << self
 
     end # module Auth

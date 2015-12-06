@@ -3,6 +3,7 @@
 
 require 'spec_helper'
 require 'qiniu/auth'
+require 'qiniu/config'
 require 'qiniu/storage'
 require 'digest/sha1'
 
@@ -68,7 +69,60 @@ module Qiniu
           puts data.inspect
         end
       end
-
     end
-  end # module Storage
+
+    ### 测试回调签名
+    context ".authenticate_callback_request" do
+      it "should works" do
+        url = '/test.php'
+        body = 'name=xxx&size=1234'
+        false.should == Qiniu::Auth.authenticate_callback_request('ABCD', url, body)
+        false.should == Qiniu::Auth.authenticate_callback_request(Config.settings[:access_key], url, body)
+        false.should == Qiniu::Auth.authenticate_callback_request('QBox ' + Config.settings[:access_key] + ':', url, body)
+        false.should == Qiniu::Auth.authenticate_callback_request('QBox ' + Config.settings[:access_key] + ':????', url, body)
+
+        acctoken = Qiniu::Auth.generate_acctoken(url, body)
+        auth_str = 'QBox ' + acctoken
+
+        false.should == Qiniu::Auth.authenticate_callback_request(auth_str + '  ', url, body)
+        true.should == Qiniu::Auth.authenticate_callback_request(auth_str, url, body)
+        true.should == Qiniu::Auth.authenticate_callback_request(acctoken, url, body)
+      end
+    end
+  end # module Auth
+
+  module Exception_Auth
+    describe Exception_Auth, :not_set_ak_sk => true do
+      ### 测试未设置 ak/sk 的异常抛出情况
+      context ".not_set_ak_sk" do
+        it "should works" do
+          puts Qiniu::Config.instance_variable_get("@settings").inspect
+
+          begin
+            uptoken = Qiniu::Auth.generate_uptoken({})
+          rescue => e
+            e.message.should == "Please set Qiniu's access_key and secret_key before authorize any tokens."
+          else
+            fail "Not raise any exception."
+          end
+
+          begin
+            download_url = Qiniu::Auth.authorize_download_url("http://test.qiniudn.com/a_private_file")
+          rescue => e
+            e.message.should == "Please set Qiniu's access_key and secret_key before authorize any tokens."
+          else
+            fail "Not raise any exception."
+          end
+
+          begin
+            acctoken = Qiniu::Auth.generate_acctoken("http://rsf.qbox.me/list")
+          rescue => e
+            e.message.should == "Please set Qiniu's access_key and secret_key before authorize any tokens."
+          else
+            fail "Not raise any exception."
+          end
+        end
+      end
+    end
+  end # module Exception_Auth
 end # module Qiniu
